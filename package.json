@@ -7,9 +7,9 @@
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Dovyski/pi-recap.git"
+    "url": "git+https://github.com/Karlo-Vrdoljak/pi-recap.git"
   },
-  "homepage": "https://github.com/Dovyski/pi-recap#readme",
+  "homepage": "https://github.com/Karlo-Vrdoljak/pi-recap#readme",
   "keywords": [
     "pi-package",
     "pi",
@@ -28,15 +28,17 @@
     ]
   },
   "peerDependencies": {
-    "@mariozechner/pi-ai": "*",
-    "@mariozechner/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": "*"
   },
   "peerDependenciesMeta": {
-    "@mariozechner/pi-ai": {
-      "optional": true
-    },
-    "@mariozechner/pi-coding-agent": {
+    "@earendil-works/pi-coding-agent": {
       "optional": true
     }
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
   }
 }
