@@ -32,7 +32,7 @@ test("installed Pi loads the package and excludes denied project settings", { sk
 				hasConfiguredAuth: () => true,
 				streamSimple: (model) => {
 					calls.push(model);
-					return { result: async () => ({ stopReason: "stop", content: [{ type: "text", text: "One two three four" }] }) };
+					return { result: async () => ({ stopReason: "stop", content: [{ type: "text", text: JSON.stringify({ goal: "Summarize safely", recap: "One two three four" }) }] }) };
 				},
 			},
 			ui: {

@@ -4,6 +4,7 @@ import test from "node:test";
 import recap from "../extensions/recap.ts";
 
 const response = (text, stopReason = "stop") => ({ content: [{ type: "text", text }], stopReason });
+const summary = (recap, goal = "Improve session recaps") => response(JSON.stringify({ goal, recap }));
 const deferred = () => {
 	let resolve, reject;
 	const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
@@ -16,7 +17,7 @@ async function until(predicate) {
 	}
 	assert.fail("Background recap did not settle");
 }
-function setup({ settings = {}, entries = [], hasUI = true, generate = () => response("Short useful recap"), available = true } = {}) {
+function setup({ settings = {}, entries = [], hasUI = true, generate = (call) => call.context.systemPrompt.includes("terminal tab title") ? response("Session recap improvements") : summary("Short useful recap"), available = true } = {}) {
 	const handlers = new Map();
 	const calls = [], statuses = new Map(), notices = [], titles = [];
 	const branch = [...entries];
@@ -62,7 +63,7 @@ function setup({ settings = {}, entries = [], hasUI = true, generate = () => res
 const saved = (data) => ({ type: "custom", customType: "pi-recap", data });
 
 test("uses Luna and the registry, stays nonblocking, and generates a six-word title only once", async () => {
-	const h = setup({ generate: (_call, n) => response(n === 2 ? "Safe short recap fork" : "Installed a short safe recap in the footer") });
+	const h = setup({ generate: (_call, n) => n === 2 ? response("Safe short recap fork") : summary("Installed a short safe recap in the footer") });
 	assert.equal(h.calls.length, 0);
 	assert.equal(h.user("Build recap"), undefined);
 	assert.equal(h.calls.length, 0, "No LLM call on user input");
@@ -91,7 +92,7 @@ test("uses Luna and the registry, stays nonblocking, and generates a six-word ti
 
 test("caps output at 14 words and 160 characters and strips terminal control sequences", async () => {
 	const h = setup({ entries: [saved({ title: "Existing title" })], settings: { recap: { maxWords: 100 } },
-		generate: () => response('\x1b]52;c;c2VjcmV0\x07\x1b[31mRecap: one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen\x1b[0m\nUnwanted second line') });
+		generate: () => summary('\x1b]52;c;c2VjcmV0\x07\x1b[31mRecap: one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen\x1b[0m\nUnwanted second line') });
 	h.user("request");
 	h.finish();
 	await until(() => h.statuses.has("pi-recap"));
@@ -99,10 +100,76 @@ test("caps output at 14 words and 160 characters and strips terminal control seq
 	assert.equal(text, "one two three four five six seven eight nine ten eleven twelve thirteen fourteen");
 	assert.equal(text.split(/\s+/).length, 14);
 	assert.ok(!/[\x00-\x1f\x7f-\x9f]/.test(text));
-	const long = setup({ entries: [saved({ title: "Existing title" })], generate: () => response("長".repeat(400)) });
+	const long = setup({ entries: [saved({ title: "Existing title" })], generate: () => summary("長".repeat(400)) });
 	long.user("request"); long.finish();
 	await until(() => long.statuses.has("pi-recap"));
 	assert.equal(long.statuses.get("pi-recap").replace("※ Recap: ", "").length, 160);
+});
+
+test("uses the previous goal and last three exchanges within a shared 4000-character request budget", async () => {
+	const entries = [saved({ title: "Recap work", goal: "Make session recaps describe their purpose" })];
+	for (const [request, reply] of [
+		["OUTDATED_REQUEST", "OUTDATED_REPLY"],
+		["Keep the session purpose visible", "Added goal tracking"],
+		["Run the recap regression tests", "All tests passed"],
+	]) entries.push({ type: "message", message: { role: "user", content: request } },
+		{ type: "message", message: { role: "assistant", ...response(reply) } });
+	const h = setup({ entries, generate: () => response(JSON.stringify({ goal: "Improve session recaps", recap: "Recaps now retain session purpose across routine verification" })) });
+	h.user("Looks good"); h.finish("Verified the footer layout");
+	await until(() => h.statuses.has("pi-recap"));
+	await setImmediate();
+	const { context } = h.calls[0];
+	const input = context.messages[0].content;
+	assert.ok(input.includes("Make session recaps describe their purpose"));
+	for (const text of ["Keep the session purpose visible", "Added goal tracking", "Run the recap regression tests", "All tests passed", "Looks good", "Verified the footer layout"]) assert.ok(input.includes(text), text);
+	assert.ok(!input.includes("OUTDATED_"));
+	assert.ok(context.systemPrompt.length + input.length <= 4000);
+	assert.match(context.systemPrompt, /goal/i);
+	assert.match(context.systemPrompt, /tests|verification/i);
+});
+
+test("shares the hard cap across long goals, custom prompts and one to three exchanges", async (t) => {
+	for (const count of [1, 2, 3]) await t.test(`${count} exchanges`, async () => {
+		const entries = [saved({ title: "Recap work", goal: "G".repeat(4000) })];
+		for (let i = 0; i < count; i++) entries.push(
+			{ type: "message", message: { role: "user", content: `REQUEST_${i} ${"u".repeat(9000)}` } },
+			{ type: "message", message: { role: "assistant", ...response(`REPLY_${i} ${"a".repeat(9000)}`) } },
+		);
+		const h = setup({ entries, settings: { recap: { prompts: { recap: "Custom guidance ".repeat(1000) } } } });
+		h.emit("agent_settled", { aborted: false });
+		await until(() => h.statuses.has("pi-recap"));
+		const { context } = h.calls[0];
+		const input = context.messages[0].content;
+		assert.equal(context.systemPrompt.length, 1000);
+		assert.ok(context.systemPrompt.includes('"goal"') && context.systemPrompt.includes('"recap"'), "Custom prompts must retain the output contract");
+		assert.ok(context.systemPrompt.length + input.length <= 4000);
+		assert.ok(context.systemPrompt.length + input.length >= 3997);
+		for (let i = 0; i < count; i++) assert.ok(input.includes(`REQUEST_${i}`) && input.includes(`REPLY_${i}`));
+	});
+});
+
+test("carries an updated goal after the original task falls out of the recent window and across resume", async () => {
+	let goal = "Harden short session recaps";
+	const h = setup({ entries: [saved({ title: "Recap work" })], generate: () => response(JSON.stringify({ goal, recap: goal })) });
+	h.user("ORIGINAL_TASK: harden session recaps"); h.finish("Implemented the recap");
+	await until(() => h.statuses.has("pi-recap"));
+	await setImmediate();
+	for (const message of ["test", "commit", "push"]) {
+		h.user(message); h.finish("Verified successfully");
+		await setImmediate();
+	}
+	const input = h.calls.at(-1).context.messages[0].content;
+	assert.ok(!input.includes("ORIGINAL_TASK"));
+	assert.ok(input.includes("Harden short session recaps"));
+	goal = "Configure macOS dictation";
+	h.user("New topic: configure macOS dictation"); h.finish("Configured the popup");
+	await setImmediate();
+	const state = h.branch.filter(entry => entry.customType === "pi-recap").at(-1).data;
+	assert.equal(state.goal, "Configure macOS dictation");
+	const resumed = setup({ entries: [saved(state)], generate: () => response(JSON.stringify({ goal, recap: goal })) });
+	resumed.user("test"); resumed.finish("Tests passed");
+	await until(() => resumed.calls.length === 1);
+	assert.ok(resumed.calls[0].context.messages[0].content.includes("Configure macOS dictation"));
 });
 
 test("sends only bounded request and answer text, not tools, thinking, or images", async () => {
@@ -114,13 +181,16 @@ test("sends only bounded request and answer text, not tools, thinking, or images
 	] } });
 	h.emit("agent_settled", { aborted: false });
 	await until(() => h.statuses.has("pi-recap"));
-	assert.equal(h.calls[0].context.messages[0].content, `Request:\n${"u".repeat(2000)}\n\nResult:\n${"a".repeat(2000)}`);
+	const { context } = h.calls[0];
+	const [full, request, reply] = context.messages[0].content.match(/\nUser: (u+)\nAssistant: (a+)/);
+	assert.ok(full && request.length > reply.length && reply.length > 0, "Prioritize user intent within the shared budget");
+	assert.ok(context.systemPrompt.length + context.messages[0].content.length <= 4000);
 	assert.ok(!JSON.stringify(h.calls).includes("PRIVATE_"));
 });
 
 test("new input cancels in-flight work, including a provider that ignores cancellation", async () => {
 	const old = deferred();
-	const h = setup({ entries: [saved({ title: "Existing title" })], generate: (_call, n) => n === 1 ? old.promise : response("New result") });
+	const h = setup({ entries: [saved({ title: "Existing title" })], generate: (_call, n) => n === 1 ? old.promise : summary("New result") });
 	h.user("old request"); h.finish("old answer");
 	await setImmediate();
 	const signal = h.calls[0].options.signal;
@@ -128,7 +198,7 @@ test("new input cancels in-flight work, including a provider that ignores cancel
 	assert.equal(signal.aborted, true);
 	h.finish("new answer");
 	await until(() => h.statuses.get("pi-recap") === "※ Recap: New result");
-	old.resolve(response("STALE RESULT"));
+	old.resolve(summary("STALE RESULT"));
 	await setImmediate();
 	assert.equal(h.statuses.get("pi-recap"), "※ Recap: New result");
 	assert.deepEqual(h.notices, []);
@@ -143,7 +213,7 @@ test("shutdown and session replacement abort old work without leaking text or pr
 	assert.equal(h.calls[0].options.signal.aborted, true);
 	h.branch.length = 0;
 	h.emit("session_start");
-	old.resolve(response("WRONG SESSION"));
+	old.resolve(summary("WRONG SESSION"));
 	await setImmediate();
 	assert.equal(h.statuses.size, 0);
 	assert.equal(h.branch.length, 0);
@@ -165,6 +235,9 @@ test("errors, incomplete output and invalid settings preserve the last successfu
 		["length limit", { generate: () => response("Half a sentence", "length") }],
 		["empty output", { generate: () => response("") }],
 		["missing model", { available: false }],
+		["invalid JSON", { generate: () => response("not JSON") }],
+		["invalid goal", { generate: () => response(JSON.stringify({ goal: 42, recap: "Bad summary" })) }],
+		["empty goal", { generate: () => summary("Bad summary", "") }],
 		["invalid model", { settings: { recap: { model: "invalid" } } }],
 		["invalid word limit", { settings: { recap: { maxWords: 0 } } }],
 		["invalid prompt", { settings: { recap: { prompts: { recap: 42 } } } }],
@@ -180,7 +253,7 @@ test("errors, incomplete output and invalid settings preserve the last successfu
 
 test("honors shorter trusted limits and model settings without a silent model fallback", async () => {
 	const h = setup({ entries: [saved({ title: "Existing title" })], settings: { recap: { model: "custom/model", maxWords: 3 } },
-		generate: () => response("One two three four five") });
+		generate: () => summary("One two three four five") });
 	h.user("request"); h.finish();
 	await until(() => h.statuses.has("pi-recap"));
 	assert.equal(h.statuses.get("pi-recap"), "※ Recap: One two three");

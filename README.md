@@ -20,12 +20,13 @@ For reproducible installs, pin a reviewed commit instead of the branch. The `dot
 
 - At most **14 words and 160 characters**, with a separate 2–6 word tab title.
 - Runs in the background only after the agent settles, not between tool calls. No calls in headless mode.
-- Sends only the latest request and final reply, each capped at 2,000 characters. No tool results, images, hidden reasoning, or full-session uploads.
+- Uses the evolving session goal and the last **three user/final-reply exchanges**, oldest first. The entire helper text input (including instructions, goal and labels) is capped at **4,000 characters total**, not per turn. Within the history budget, user intent gets more space than assistant replies. No raw tool results, images, hidden reasoning, or full-session uploads.
 - Uses Pi's model registry for authentication; never reads credential files or handles tokens itself.
 - Reads only Pi's effective settings. A denied project's settings cannot override the recap model.
 - Aborts obsolete work on new input, session replacement, reload, or shutdown. Each helper request has a 15-second deadline and no retries.
 - Removes terminal control sequences from generated and restored text. Incomplete/failed results retain the previous recap and show a warning.
 - Persists recap/title data as session custom entries, not model-visible messages. The first recap also generates the title; later exchanges need only the recap call.
+- Updates the short goal and recap in the same model call. Keeps the goal through acknowledgements, tests, commits and verification; recent substantive user requests can change it. Recaps emphasize purpose plus current state instead of routinely reporting tests.
 
 **These are additional model calls and consume your allowance.** Helper usage is not included in Pi's session token/dollar totals. Only enable the extension if sending those bounded snippets to the selected provider is acceptable. A recap is an orientation aid, not a verified statement of completed work.
 
@@ -42,7 +43,7 @@ No configuration is necessary. Optional settings are read through Pi's trusted-s
 }
 ```
 
-`maxWords` may shorten the recap but cannot exceed 14. The existing `recap.prompts.title` and `recap.prompts.recap` string overrides remain supported; each prompt is capped at 2,000 characters. Trusted project settings can change these values, including the provider. Review them before approving a project. Run `/reload` after changing settings.
+`maxWords` may shorten the recap but cannot exceed 14. The existing `recap.prompts.title` and `recap.prompts.recap` string overrides remain supported; system instructions are capped at 1,000 characters, with a required JSON goal/recap format appended inside that cap. Trusted project settings can change these values, including the provider. Review them before approving a project. Run `/reload` after changing settings.
 
 The extension publishes a plain `pi-recap` status and never replaces the footer. A custom footer can explicitly place that status last; `dotfiles-mac` does so and preserves wrapping at narrow widths.
 
